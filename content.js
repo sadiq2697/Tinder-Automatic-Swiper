@@ -5,37 +5,48 @@ function sleep(ms) {
 
 async function autoLikeRight() {
   while (true) {
-    // Infinite loop
-    // Check if autoLike and autoDislike are enabled and get delay time
-    const { autoLike, autoDislike, delayTime } = await new Promise((resolve) =>
-      chrome.storage.local.get(["autoLike", "autoDislike", "delayTime"], resolve)
-    );
+    let settings;
+    try {
+      settings = await new Promise((resolve, reject) => {
+        if (!chrome.runtime?.id) {
+          reject(new Error("Extension context invalidated"));
+          return;
+        }
+        chrome.storage.local.get(["autoLike", "autoDislike", "delayTime"], resolve);
+      });
+    } catch (error) {
+      console.log("Extension context lost, stopping auto-swiper");
+      return;
+    }
+
+    const { autoLike, autoDislike, delayTime } = settings;
 
     const likeButton = document.getElementsByClassName(
       "button Lts($ls-s) Z(0) CenterAlign Mx(a) Cur(p) Tt(u) Bdrs(50%) P(0) Fw($semibold) focus-button-style Bxsh($bxsh-btn) Expand Trstf(e) Trsdu($normal) Wc($transform) Pe(a) Scale(1.1):h Scale(.9):a Bgi($g-ds-background-like):a"
     )[0];
-    
-    const dislikeButton = document.getElementsByClassName("button Lts($ls-s) Z(0) CenterAlign Mx(a) Cur(p) Tt(u) Bdrs(50%) P(0) Fw($semibold) focus-button-style Bxsh($bxsh-btn) Expand Trstf(e) Trsdu($normal) Wc($transform) Pe(a) Scale(1.1):h Scale(.9):a Bgi($g-ds-background-nope):a")[0]; // Replace "your-dislike-button-class" with the actual class of the dislike button
+
+    const dislikeButton = document.getElementsByClassName(
+      "button Lts($ls-s) Z(0) CenterAlign Mx(a) Cur(p) Tt(u) Bdrs(50%) P(0) Fw($semibold) focus-button-style Bxsh($bxsh-btn) Expand Trstf(e) Trsdu($normal) Wc($transform) Pe(a) Scale(1.1):h Scale(.9):a Bgi($g-ds-background-nope):a"
+    )[0];
 
     if (autoLike && autoDislike) {
-      const randomAction = Math.random() < 0.5 ? 'like' : 'dislike'; // Randomly decide whether to like or dislike
+      const randomAction = Math.random() < 0.5 ? 'like' : 'dislike';
       if (randomAction === 'like' && likeButton) {
         likeButton.click();
-        console.log("Liked 1");
+        console.log("Liked (random)");
       } else if (randomAction === 'dislike' && dislikeButton) {
         dislikeButton.click();
-        console.log("Disliked 1");
+        console.log("Disliked (random)");
       }
-    } else if (autoLike && !autoDislike) {
+    } else if (autoLike && !autoDislike && likeButton) {
       likeButton.click();
-      console.log("Liked 2");
-    } else if (!autoLike && autoDislike) {
+      console.log("Liked");
+    } else if (!autoLike && autoDislike && dislikeButton) {
       dislikeButton.click();
-      console.log("Disliked 2");
+      console.log("Disliked");
     }
 
-    // Wait for the specified delay time before the next action
-    await sleep(parseInt(delayTime, 10) * 1000);
+    await sleep(parseInt(delayTime, 10) * 1000 || 1000);
   }
 }
 
