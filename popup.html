@@ -1,31 +1,116 @@
 <!DOCTYPE html>
 <html lang="en">
-
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <link rel="stylesheet" href="styles.css">
-    <title>Tinder Automatic Swiper</title>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="stylesheet" href="styles.css">
+  <title>Auto Swiper</title>
 </head>
 <body>
-    <center>
+  <!-- Settings View -->
+  <div id="settingsView">
+    <div class="header">
+      <h1>Auto Swiper</h1>
+      <div class="version">v2.0.0</div>
+    </div>
 
-        <h1>Tinder Automatic Swiper</h1>
-    </center>
-    <label>
-        <span>Activate Auto Swipe:</span>
-        <input type="checkbox" id="autoLike"> <br>
-    </label>
-    <label>
-        <span>Activate Auto Dislikes:</span>
-        <input type="checkbox" id="autoDislike"> <br>
-    </label>
-    <label>
-        <span>Delay Time (seconds):</span>
-        <input type="number" id="delayTime" placeholder="1" value="1">
-    </label>
-    <button id="saveSettings">Save Settings</button>
-    <script src="popup.js"></script>
+    <div class="content">
+      <div class="setting-group">
+        <div class="toggle-row">
+          <span>Auto Like (Right)</span>
+          <label class="switch">
+            <input type="checkbox" id="autoLike">
+            <span class="slider"></span>
+          </label>
+        </div>
+        <div class="toggle-row">
+          <span>Auto Dislike (Left)</span>
+          <label class="switch">
+            <input type="checkbox" id="autoDislike">
+            <span class="slider"></span>
+          </label>
+        </div>
+      </div>
+
+      <div class="setting-group">
+        <div class="range-container">
+          <div class="range-header">
+            <span>Delay Time</span>
+            <span class="range-value" id="delayValue">1s</span>
+          </div>
+          <input type="range" id="delayTime" min="1" max="10" value="1">
+          <div class="range-labels">
+            <span>1s</span>
+            <span>5s</span>
+            <span>10s</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="action-buttons">
+      <button class="action-btn play" id="playBtn" title="Start">&#9658;</button>
+      <button class="action-btn save" id="saveBtn" title="Save">&#128190;</button>
+      <button class="action-btn reset" id="resetBtn" title="Reset Stats">&#8635;</button>
+    </div>
+  </div>
+
+  <!-- Running View -->
+  <div id="runningView" style="display: none;">
+    <div class="header">
+      <h1>Auto Swiper</h1>
+      <div class="version">v2.0.0</div>
+    </div>
+
+    <div class="content">
+      <div class="section-title">Swipes</div>
+      <div class="stats-row">
+        <div class="stat-pill left">
+          <span class="label">Left</span>
+          <span class="value" id="leftCount">0</span>
+          <span class="percent" id="leftPercent">0%</span>
+        </div>
+        <div class="stat-pill right">
+          <span class="label">Right</span>
+          <span class="value" id="rightCount">0</span>
+        </div>
+        <div class="stat-pill total">
+          <span class="label">Total</span>
+          <span class="value" id="totalCount">0</span>
+        </div>
+      </div>
+
+      <div class="section-title">Last Swipe</div>
+      <div class="last-swipe" id="lastSwipeInfo">
+        <div class="info-row">
+          <div class="info-pill name">
+            <span class="label">Name</span>
+            <span class="value" id="lastName">-</span>
+          </div>
+          <div class="info-pill age">
+            <span class="label">Age</span>
+            <span class="value" id="lastAge">-</span>
+          </div>
+          <div class="info-pill distance">
+            <span class="label">Dist</span>
+            <span class="value" id="lastDistance">-</span>
+          </div>
+        </div>
+        <div class="info-row">
+          <div class="info-pill action" id="lastActionPill">
+            <span class="label" id="lastAction">-</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="action-buttons">
+      <button class="action-btn stop" id="stopBtn" title="Stop">&#9632;</button>
+    </div>
+  </div>
+
+  <div class="toast" id="toast">Settings saved!</div>
+
+  <script src="popup.js"></script>
 </body>
-
 </html>
