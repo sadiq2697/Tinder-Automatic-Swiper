@@ -76,9 +76,44 @@ function getProfileInfo() {
   return info;
 }
 
-function triggerClick(element) {
+async function triggerClick(element, direction) {
   if (!element) return false;
-  element.click();
+
+  const site = getSite();
+
+  if (site === 'bumble') {
+    // Use Chrome debugger API for Bumble (sends trusted clicks)
+    const rect = element.getBoundingClientRect();
+    const x = Math.round(rect.left + rect.width / 2);
+    const y = Math.round(rect.top + rect.height / 2);
+
+    log(`[BUMBLE] Sending debugger click at (${x}, ${y})`);
+
+    try {
+      const response = await chrome.runtime.sendMessage({
+        action: 'debuggerClick',
+        x: x,
+        y: y
+      });
+
+      if (response && response.success) {
+        log(`[BUMBLE] Debugger click successful`);
+        return true;
+      } else {
+        log(`[BUMBLE] Debugger click failed: ${response?.error}`);
+        // Fallback to regular click
+        element.click();
+      }
+    } catch (err) {
+      log(`[BUMBLE] Debugger error: ${err.message}`);
+      element.click();
+    }
+
+  } else {
+    // Tinder - simple click works
+    element.click();
+  }
+
   return true;
 }
 
@@ -129,19 +164,59 @@ function findActionButtons() {
     actionBtns.sort((a, b) => a.getBoundingClientRect().left - b.getBoundingClientRect().left);
     return { buttons: actionBtns, likeIndex: 3, dislikeIndex: 1 };
   } else if (site === 'bumble') {
-    // Bumble: look for specific buttons
-    const likeBtn = document.querySelector('[data-qa-role="encounters-action-like"]')
-      || document.querySelector('[class*="encounters-action--like"]')
-      || document.querySelector('.encounters-action--like')
-      || buttons.find(b => b.className.includes('like') && !b.className.includes('superlike'));
+    // Bumble: buttons can be divs or spans, not just button elements
+    // Look for action buttons by multiple methods
 
-    const dislikeBtn = document.querySelector('[data-qa-role="encounters-action-dislike"]')
-      || document.querySelector('[class*="encounters-action--dislike"]')
-      || document.querySelector('.encounters-action--dislike')
-      || buttons.find(b => b.className.includes('dislike') || b.className.includes('pass'));
+    // Method 1: Look for elements with specific test IDs or classes
+    const allElements = document.querySelectorAll('div, span, button');
 
-    // If specific buttons found, return them
+    let likeBtn = null;
+    let dislikeBtn = null;
+
+    // Find by aria-label or title
+    for (const el of allElements) {
+      const aria = el.getAttribute('aria-label')?.toLowerCase() || '';
+      const title = el.getAttribute('title')?.toLowerCase() || '';
+      const className = el.className?.toLowerCase() || '';
+
+      if ((aria.includes('like') || title.includes('like') || className.includes('vote-yes'))
+          && !aria.includes('super') && !title.includes('super')) {
+        if (!likeBtn && el.offsetWidth > 30) likeBtn = el;
+      }
+      if (aria.includes('pass') || aria.includes('dislike') || aria.includes('nope')
+          || title.includes('pass') || className.includes('vote-no')) {
+        if (!dislikeBtn && el.offsetWidth > 30) dislikeBtn = el;
+      }
+    }
+
+    // Method 2: Find circular buttons at bottom by position (X, Star, Check layout)
+    const bottomElements = Array.from(document.querySelectorAll('div, span, button')).filter(el => {
+      const rect = el.getBoundingClientRect();
+      if (rect.width === 0 || rect.height === 0) return false;
+      if (rect.width < 50 || rect.width > 150) return false;
+      if (rect.top < window.innerHeight * 0.7) return false;
+      // Check if roughly circular
+      const ratio = rect.width / rect.height;
+      if (ratio < 0.7 || ratio > 1.3) return false;
+      // Check if clickable (has cursor pointer or is button-like)
+      const style = window.getComputedStyle(el);
+      return style.cursor === 'pointer' || el.tagName === 'BUTTON' || el.onclick;
+    });
+
+    bottomElements.sort((a, b) => a.getBoundingClientRect().left - b.getBoundingClientRect().left);
+    log(`[BUMBLE] Found ${bottomElements.length} bottom action elements`);
+
+    // Layout is typically: [Pass/X, SuperSwipe/Star, Like/Check]
+    if (bottomElements.length >= 3) {
+      dislikeBtn = dislikeBtn || bottomElements[0];
+      likeBtn = likeBtn || bottomElements[2]; // Rightmost is Like
+    } else if (bottomElements.length >= 2) {
+      dislikeBtn = dislikeBtn || bottomElements[0];
+      likeBtn = likeBtn || bottomElements[bottomElements.length - 1];
+    }
+
     if (likeBtn || dislikeBtn) {
+      log(`[BUMBLE] Like btn: ${likeBtn?.className?.slice(0, 50)}, Dislike btn: ${dislikeBtn?.className?.slice(0, 50)}`);
       return {
         buttons: [dislikeBtn, likeBtn].filter(Boolean),
         likeBtn,
@@ -150,22 +225,13 @@ function findActionButtons() {
       };
     }
 
-    // Fallback: find action buttons by position
-    const actionBtns = buttons.filter(btn => {
-      const rect = btn.getBoundingClientRect();
-      if (rect.width === 0 || rect.height === 0) return false;
-      if (rect.top < window.innerHeight * 0.5) return false;
-      if (rect.width < 40 || rect.width > 120) return false;
-      return true;
-    });
-    actionBtns.sort((a, b) => a.getBoundingClientRect().left - b.getBoundingClientRect().left);
-    return { buttons: actionBtns, likeIndex: actionBtns.length - 1, dislikeIndex: 0 };
+    return { buttons: [], likeIndex: -1, dislikeIndex: -1 };
   }
 
   return { buttons: [], likeIndex: -1, dislikeIndex: -1 };
 }
 
-function swipe(direction) {
+async function swipe(direction) {
   const site = getSite();
   const card = findProfileCard();
 
@@ -181,11 +247,11 @@ function swipe(direction) {
   if (actionData.site === 'bumble') {
     if (direction === 'right' && actionData.likeBtn) {
       log(`DECISION: Swiping RIGHT on Bumble`);
-      triggerClick(actionData.likeBtn);
+      await triggerClick(actionData.likeBtn, direction);
       return true;
     } else if (direction === 'left' && actionData.dislikeBtn) {
       log(`DECISION: Swiping LEFT on Bumble`);
-      triggerClick(actionData.dislikeBtn);
+      await triggerClick(actionData.dislikeBtn, direction);
       return true;
     }
   }
@@ -199,7 +265,7 @@ function swipe(direction) {
 
     if (btn) {
       log(`DECISION: Swiping ${direction.toUpperCase()} on ${site}`);
-      triggerClick(btn);
+      await triggerClick(btn, direction);
       return true;
     }
   }
@@ -271,7 +337,7 @@ async function doSwipe() {
 
   log(`[${site.toUpperCase()}] Processing: {profileName: '${profileInfo.name}', age: ${profileInfo.age}}`);
 
-  const success = swipe(direction);
+  const success = await swipe(direction);
 
   if (success) {
     await updateStats(direction === 'right' ? 'like' : 'dislike', profileInfo);
