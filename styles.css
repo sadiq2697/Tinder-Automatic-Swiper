@@ -29,6 +29,11 @@ body {
   margin-top: 2px;
 }
 
+.header .version span {
+  color: #fe3c72;
+  font-weight: 600;
+}
+
 .content {
   padding: 16px;
 }

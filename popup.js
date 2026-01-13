@@ -18,7 +18,9 @@ const elements = {
   lastAge: document.getElementById('lastAge'),
   lastDistance: document.getElementById('lastDistance'),
   lastAction: document.getElementById('lastAction'),
-  lastActionPill: document.getElementById('lastActionPill')
+  lastActionPill: document.getElementById('lastActionPill'),
+  siteIndicator: document.getElementById('siteIndicator'),
+  siteIndicatorRunning: document.getElementById('siteIndicatorRunning')
 };
 
 function updateSliderBackground(slider) {
@@ -91,15 +93,24 @@ function loadSettings() {
 async function sendMessageToTab(message) {
   try {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    if (!tab || !tab.url || !tab.url.includes('tinder.com')) {
-      showToast('Open Tinder first!');
+    if (!tab || !tab.url) {
+      showToast('Open Tinder/Bumble first!');
       return false;
     }
+
+    const isTinder = tab.url.includes('tinder.com');
+    const isBumble = tab.url.includes('bumble.com');
+
+    if (!isTinder && !isBumble) {
+      showToast('Open Tinder/Bumble first!');
+      return false;
+    }
+
     await chrome.tabs.sendMessage(tab.id, message);
     return true;
   } catch (error) {
     console.log('Message error:', error);
-    showToast('Reload Tinder page');
+    showToast('Reload the page');
     return false;
   }
 }
@@ -175,8 +186,31 @@ setInterval(() => {
   });
 }, 500);
 
+async function detectSite() {
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (tab && tab.url) {
+      if (tab.url.includes('tinder.com')) {
+        updateSiteIndicator('Tinder');
+      } else if (tab.url.includes('bumble.com')) {
+        updateSiteIndicator('Bumble');
+      } else {
+        updateSiteIndicator('No site');
+      }
+    }
+  } catch (e) {
+    updateSiteIndicator('-');
+  }
+}
+
+function updateSiteIndicator(site) {
+  if (elements.siteIndicator) elements.siteIndicator.textContent = site;
+  if (elements.siteIndicatorRunning) elements.siteIndicatorRunning.textContent = site;
+}
+
 // Initialize
 document.addEventListener('DOMContentLoaded', () => {
   loadSettings();
   updateSliderBackground(elements.delayTime);
+  detectSite();
 });
