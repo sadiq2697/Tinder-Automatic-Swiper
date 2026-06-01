@@ -13,20 +13,71 @@ let isSwipeInProgress = false;
 let tabId = null;
 let currentSpeedMode = false;
 
+// Single-owner loop guard. Every (re)start/resume bumps runToken; a doSwipe
+// chain captures the token it was launched with and must still own it after
+// each await, otherwise it is a stale loop (from a duplicate start, an
+// overlapping resume, etc.) and exits before counting. This guarantees
+// exactly one increment per swipe and fixes the 2x/4x double-counting bug.
+let runToken = 0;
+
+// Signature of the last profile we actually counted. Guards against counting
+// the same card twice when the DOM has not yet advanced to the next profile
+// (a fast-mode hazard that double-counts and shows stale data).
+let lastCountedSignature = null;
+
 function log(msg) {
   console.log(`[AutoSwiper:${tabId || '?'}] ${msg}`);
 }
 
+// True while this content script still has a live connection to the
+// extension. After the extension is reloaded/updated/disabled, the injected
+// script keeps running but chrome.runtime.id becomes undefined; any chrome.*
+// call then throws "Extension context invalidated".
+function isExtensionContextValid() {
+  try {
+    return !!(chrome && chrome.runtime && chrome.runtime.id);
+  } catch (e) {
+    return false;
+  }
+}
+
+// Stop the loop locally when the context is gone. Must NOT make any chrome.*
+// calls (they would throw again). Just halt timers and flags so the orphaned
+// script goes quiet until the page is reloaded.
+function handleContextLost() {
+  isRunning = false;
+  isPaused = false;
+  isSwipeInProgress = false;
+  runToken++;
+  if (swipeInterval) { clearTimeout(swipeInterval); swipeInterval = null; }
+  if (sessionGapTimeout) { clearTimeout(sessionGapTimeout); sessionGapTimeout = null; }
+  if (breakTimeout) { clearTimeout(breakTimeout); breakTimeout = null; }
+  if (matchObserver) { try { matchObserver.disconnect(); } catch (e) {} matchObserver = null; }
+  console.log('[AutoSwiper] Extension context invalidated; stopped. Reload the tab to continue.');
+}
+
 // Get this tab's session from storage
 async function getTabSession() {
-  const data = await chrome.storage.local.get(['sessions']);
-  const sessions = data.sessions || {};
-  return sessions[tabId] || null;
+  if (!isExtensionContextValid()) return null;
+  try {
+    const data = await chrome.storage.local.get(['sessions']);
+    const sessions = (data && data.sessions) || {};
+    return sessions[tabId] || null;
+  } catch (e) {
+    return null;
+  }
 }
 
 // Update this tab's session in storage
 async function updateTabSession(updates) {
-  const data = await chrome.storage.local.get(['sessions']);
+  if (!isExtensionContextValid()) return null;
+  let data;
+  try {
+    data = await chrome.storage.local.get(['sessions']);
+  } catch (e) {
+    return null;
+  }
+  data = data || {};
   const sessions = data.sessions || {};
 
   if (!sessions[tabId]) {
@@ -43,7 +94,11 @@ async function updateTabSession(updates) {
   }
 
   Object.assign(sessions[tabId], updates);
-  await chrome.storage.local.set({ sessions });
+  try {
+    await chrome.storage.local.set({ sessions });
+  } catch (e) {
+    return null;
+  }
   return sessions[tabId];
 }
 
@@ -289,7 +344,9 @@ async function checkSessionGap(settings) {
           title: 'Resuming',
           message: 'Session gap complete. Resuming swiping.',
         });
-        doSwipe();
+        // New authoritative run after the gap; supersede any lingering loop.
+        runToken++;
+        doSwipe(runToken);
       }
     }, gapMs);
 
@@ -310,6 +367,22 @@ function getSite() {
   return 'unknown';
 }
 
+// Wait until the next profile card has actually rendered before scraping it.
+// In fast/speed mode there is no settle delay, so getProfileInfo can run
+// before the DOM swaps in the new card, producing "Unknown / ? / ?". This
+// polls briefly (capped) for a scrapeable name and returns as soon as the
+// card is ready, so slow mode is unaffected and fast mode stops misreading.
+async function waitForProfileReady(maxWaitMs = 1200, stepMs = 60) {
+  const start = Date.now();
+  while (Date.now() - start < maxWaitMs) {
+    const info = getProfileInfo();
+    if (info.name && info.name !== 'Unknown') return info;
+    await sleep(stepMs);
+  }
+  // Timed out: return whatever we can read (may still be partial).
+  return getProfileInfo();
+}
+
 // Enhanced profile info extraction
 function getProfileInfo() {
   const site = getSite();
@@ -324,28 +397,70 @@ function getProfileInfo() {
   };
 
   if (site === 'tinder') {
-    // Tinder profile scraping
-    const nameSelectors = ['[itemprop="name"]', 'h1', 'span[class*="Typs"]'];
+    // Scope scraping to the visible recs card when we can find it, so we do
+    // not read a hidden, preloaded next card. Fall back to the document.
+    const root = findProfileCard() || document;
+    const q = (sel) => root.querySelector(sel) || document.querySelector(sel);
+    const qa = (sel) => {
+      const a = Array.from(root.querySelectorAll(sel));
+      return a.length ? a : Array.from(document.querySelectorAll(sel));
+    };
+
+    // Name + age. Tinder's heading often renders the name and the age in
+    // separate nodes (and may include a verified badge), so the old
+    // "name then exactly two digits" regex on a single element missed it.
+    // Read the heading text, then pull the trailing age out separately.
+    const nameSelectors = [
+      '[itemprop="name"]',
+      'h1[aria-label]',
+      'h1',
+      '[class*="Typs(display-1-strong)"]',
+      'span[class*="Typs"]',
+    ];
+    // Use the shared, unit-tested parser; fall back to an inline equivalent
+    // if logic.js somehow failed to load, so scraping never throws.
+    const parseHeading = (typeof AutoSwiperLogic !== 'undefined' && AutoSwiperLogic.parseTinderHeading)
+      ? AutoSwiperLogic.parseTinderHeading
+      : (raw) => {
+          const text = String(raw || '').replace(/\s+/g, ' ').trim();
+          if (!text) return { name: '', age: '?' };
+          const m = text.match(/\b(\d{1,3})\b/);
+          return { name: text.replace(/\s*\b\d{1,3}\b\s*$/, '').trim(), age: m ? m[1] : '?' };
+        };
+
     for (const selector of nameSelectors) {
-      const el = document.querySelector(selector);
-      if (el && el.textContent) {
-        const text = el.textContent.trim();
-        const match = text.match(/^(.+?)\s*(\d{2})$/);
-        if (match) {
-          info.name = match[1];
-          info.age = match[2];
-          break;
-        }
+      const el = q(selector);
+      if (!el) continue;
+      // Prefer an explicit aria-label ("Meera 23") when present.
+      const raw = (el.getAttribute && el.getAttribute('aria-label')) || el.textContent || '';
+      const parsed = parseHeading(raw);
+      if (parsed.name) {
+        info.name = parsed.name;
+        if (parsed.age !== '?') info.age = parsed.age;
+        break;
       }
     }
 
-    // Distance
-    const distEl = Array.from(document.querySelectorAll('span')).find(el =>
-      el.textContent.includes('kilometre') || el.textContent.includes('mile')
-    );
+    // If the name selectors did not yield an age, scan for an age node.
+    if (info.age === '?') {
+      const ageEl = qa('span, div').find((el) => {
+        const t = (el.textContent || '').trim();
+        return /^\d{1,3}$/.test(t) && Number(t) >= 18 && Number(t) <= 99;
+      });
+      if (ageEl) info.age = ageEl.textContent.trim();
+    }
+
+    // Distance ("10 kilometres away" / "5 miles away").
+    const distEl = qa('span, div').find((el) => {
+      const t = el.textContent || '';
+      return /kilometre|kilometer|\bkm\b|mile/i.test(t) && /\d/.test(t);
+    });
     if (distEl) {
       const m = distEl.textContent.match(/(\d+)/);
-      if (m) info.distance = m[1] + 'km';
+      if (m) {
+        const unit = /mile/i.test(distEl.textContent) ? 'mi' : 'km';
+        info.distance = m[1] + unit;
+      }
     }
 
     // Bio detection
@@ -784,15 +899,42 @@ function decideDirection(settings, filterResult) {
   return 'right';
 }
 
-async function doSwipe() {
+async function doSwipe(token = runToken) {
   if (!isRunning || isPaused) return;
 
-  // Prevent concurrent execution - fixes double-counting bug
+  // Stale-loop guard: a newer start/resume superseded this chain.
+  if (token !== runToken) {
+    log('[WARN] Stale swipe loop, exiting');
+    return;
+  }
+
+  // ASYNC MUTEX (synchronous claim, before any await): if a swipe is already
+  // executing, drop this invocation entirely. Because this check-and-set runs
+  // synchronously, two invocations from ANY source (the main timer, a resume,
+  // a stray duplicate timer at fast 1s timing) can never both pass. The lock
+  // is held for the WHOLE swipe and released only in the finally below, so it
+  // survives every await. This is the core fix for the 2x/4x counting bug.
   if (isSwipeInProgress) {
-    log('[WARN] Swipe already in progress, skipping');
+    log('[WARN] Swipe already in progress, skipping duplicate');
     return;
   }
   isSwipeInProgress = true;
+
+  try {
+    await runSwipe(token);
+  } finally {
+    isSwipeInProgress = false;
+  }
+}
+
+async function runSwipe(token) {
+  // If the extension was reloaded/updated, this content script is orphaned
+  // and its chrome.* connection is dead. Bail out cleanly instead of throwing
+  // "Extension context invalidated" on the next chrome call.
+  if (!isExtensionContextValid()) {
+    handleContextLost();
+    return;
+  }
 
   let data;
   try {
@@ -801,15 +943,22 @@ async function doSwipe() {
         reject(new Error("Context invalidated"));
         return;
       }
-      chrome.storage.local.get(['settings', 'filters', 'stats'], resolve);
+      chrome.storage.local.get(['settings', 'filters', 'stats'], (result) => {
+        if (chrome.runtime.lastError) {
+          reject(new Error(chrome.runtime.lastError.message));
+          return;
+        }
+        resolve(result);
+      });
     });
   } catch (e) {
-    log("Context lost, stopping");
-    isSwipeInProgress = false;
-    stopSwiper();
+    handleContextLost();
     return;
   }
 
+  // Guard against an undefined result (can happen if the context dies during
+  // the storage read), which previously threw at "data.settings".
+  data = data || {};
   const settings = data.settings || {};
   const filters = data.filters || {};
   const stats = data.stats || {};
@@ -819,7 +968,6 @@ async function doSwipe() {
   currentSpeedMode = settings.speedMode || false;
 
   if (!settings.autoLike && !settings.autoDislike) {
-    isSwipeInProgress = false;
     return;
   }
 
@@ -830,7 +978,6 @@ async function doSwipe() {
   if (settings.dailyLimit > 0 && todayTotal >= settings.dailyLimit) {
     log('[LIMIT] Daily limit reached');
     chrome.runtime.sendMessage({ action: 'limitReached', limitType: 'daily' });
-    isSwipeInProgress = false;
     stopSwiper();
     return;
   }
@@ -838,7 +985,6 @@ async function doSwipe() {
   if (settings.swipeLimit > 0 && sessionTotal >= settings.swipeLimit) {
     log('[LIMIT] Session limit reached');
     chrome.runtime.sendMessage({ action: 'limitReached', limitType: 'session' });
-    isSwipeInProgress = false;
     stopSwiper();
     return;
   }
@@ -846,7 +992,6 @@ async function doSwipe() {
   // ANTI-DETECTION: Check for session gap (long break every X swipes)
   const gapStarted = await checkSessionGap(settings);
   if (gapStarted) {
-    isSwipeInProgress = false;
     return;
   }
 
@@ -854,7 +999,6 @@ async function doSwipe() {
   if (settings.breakInterval > 0 && (session.swipesSinceBreak || 0) >= settings.breakInterval) {
     log(`[BREAK] Taking ${settings.breakDuration}s break`);
     isPaused = true;
-    isSwipeInProgress = false;
 
     chrome.runtime.sendMessage({ action: 'breakTime', duration: settings.breakDuration });
     await updateTabSession({ isPaused: true });
@@ -863,7 +1007,11 @@ async function doSwipe() {
       breakTimeout = null;
       isPaused = false;
       await updateTabSession({ isPaused: false, swipesSinceBreak: 0 });
-      if (isRunning) doSwipe();
+      // New authoritative run after the break; supersede any lingering loop.
+      if (isRunning) {
+        runToken++;
+        doSwipe(runToken);
+      }
     }, (settings.breakDuration || 30) * 1000);
 
     return;
@@ -874,12 +1022,13 @@ async function doSwipe() {
 
   if (!card) {
     log(`[WARN] No profile card found on ${site}, skipping`);
-    isSwipeInProgress = false;
-    scheduleNext(settings);
+    scheduleNext(settings, token);
     return;
   }
 
-  const profileInfo = getProfileInfo();
+  // Wait for the card to render before scraping (fixes "Unknown / ?" in fast
+  // mode where scraping otherwise races ahead of the DOM).
+  const profileInfo = await waitForProfileReady();
 
   // Anti-detection behaviors (skip if speed mode OR anti-detection disabled)
   if (!settings.speedMode && settings.antiDetection !== false) {
@@ -896,11 +1045,43 @@ async function doSwipe() {
 
   const success = await swipe(direction);
 
+  // Post-await ownership re-check: if a newer loop took over while we were
+  // awaiting (the window that caused double-counting), bail before counting.
+  if (token !== runToken) {
+    log('[WARN] Loop superseded during swipe, not counting');
+    return;
+  }
+
   if (success) {
     const action = direction === 'right' ? 'like' : 'dislike';
 
+    // Same-card guard: if this profile signature matches the one we just
+    // counted, the DOM had not advanced to a new card (a fast-mode hazard),
+    // so do not count it again. Skip recording but keep the loop going.
+    const signature = `${profileInfo.name}|${profileInfo.age}|${profileInfo.distance}`;
+    if (signature === lastCountedSignature && profileInfo.name !== 'Unknown') {
+      log('[WARN] Same profile as last swipe, not double-counting');
+      scheduleNext(settings, token);
+      return;
+    }
+    lastCountedSignature = signature;
+
+    // Bail if the extension was reloaded mid-swipe, so the count write below
+    // does not throw "Extension context invalidated".
+    if (!isExtensionContextValid()) {
+      handleContextLost();
+      return;
+    }
+
     // Update global stats
-    const freshData = await chrome.storage.local.get(['stats', 'history']);
+    let freshData;
+    try {
+      freshData = await chrome.storage.local.get(['stats', 'history']);
+    } catch (e) {
+      handleContextLost();
+      return;
+    }
+    freshData = freshData || {};
     const freshStats = freshData.stats || {};
     const freshHistory = freshData.history || { swipes: [], sessions: [] };
 
@@ -968,19 +1149,28 @@ async function doSwipe() {
     log(`Stats: {total: ${freshStats.totalLikes + freshStats.totalDislikes}, action: '${action}', profile: '${profileInfo.name}'}`);
   }
 
-  isSwipeInProgress = false;
-  scheduleNext(settings);
+  scheduleNext(settings, token);
 }
 
-function scheduleNext(settings) {
+function scheduleNext(settings, token = runToken) {
+  // Only the current loop may arm the next swipe; a stale loop must not.
+  if (token !== runToken) return;
   const delay = getDelay(settings);
+  // Always clear any pending timer first so timers can never stack.
+  if (swipeInterval) {
+    clearTimeout(swipeInterval);
+    swipeInterval = null;
+  }
   if (isRunning && !isPaused) {
-    swipeInterval = setTimeout(doSwipe, delay);
+    swipeInterval = setTimeout(() => doSwipe(token), delay);
   }
 }
 
 async function startSwiper() {
   if (isRunning) return;
+  // Claim the running flag synchronously (before any await) so a second
+  // 'start' arriving during the awaits below cannot start a parallel loop.
+  isRunning = true;
 
   // Ensure we have a tab ID
   if (!tabId) {
@@ -988,16 +1178,19 @@ async function startSwiper() {
     tabId = response?.tabId;
     if (!tabId) {
       log('[ERROR] Could not get tab ID');
+      isRunning = false;
       return;
     }
   }
 
   const site = getSite();
   log(`[INFO] Starting auto swiper on ${site}`);
-  isRunning = true;
   isPaused = false;
   totalSwipesBeforeGap = 0;
   isSwipeInProgress = false;
+  lastCountedSignature = null;
+  // New authoritative run; supersedes any lingering loop.
+  runToken++;
 
   // Setup match detection
   setupMatchDetection();
@@ -1030,6 +1223,8 @@ async function stopSwiper() {
   isPaused = false;
   totalSwipesBeforeGap = 0;
   isSwipeInProgress = false;
+  // Invalidate any in-flight loop so it cannot count or reschedule.
+  runToken++;
 
   if (swipeInterval) {
     clearTimeout(swipeInterval);
@@ -1092,10 +1287,13 @@ async function stopSwiper() {
 }
 
 async function pauseSwiper() {
-  if (!isRunning) return;
+  if (!isRunning || isPaused) return;
 
   log('[INFO] Pausing auto swiper');
   isPaused = true;
+  // Invalidate any in-flight loop so a swipe mid-await cannot count or
+  // reschedule after we pause.
+  runToken++;
 
   if (swipeInterval) {
     clearTimeout(swipeInterval);
@@ -1115,7 +1313,9 @@ async function resumeSwiper() {
   await updateTabSession({ isPaused: false, isRunning: true });
   log('[INFO] Session resumed, storage updated');
 
-  doSwipe();
+  // New authoritative run; supersedes any lingering loop, then launch one.
+  runToken++;
+  doSwipe(runToken);
 }
 
 chrome.runtime.onMessage.addListener((msg, sender, respond) => {
