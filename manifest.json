@@ -1,12 +1,13 @@
 {
     "name": "Auto Swiper",
-    "version": "2.0",
-    "description": "Automate swiping on Tinder and Bumble.",
+    "version": "3.0",
+    "description": "Automate swiping on Tinder and Bumble with smart filters, analytics, and more.",
     "manifest_version": 3,
     "permissions": [
         "storage",
         "tabs",
-        "debugger"
+        "debugger",
+        "notifications"
     ],
     "background": {
         "service_worker": "background.js"
@@ -29,6 +30,7 @@
                 "*://*.bumble.com/*"
             ],
             "js": [
+                "storage.js",
                 "content.js"
             ]
         }
@@ -38,5 +40,11 @@
         "*://*.tinder.com/*",
         "https://bumble.com/*",
         "*://*.bumble.com/*"
+    ],
+    "web_accessible_resources": [
+        {
+            "resources": ["sounds/*"],
+            "matches": ["https://www.tinder.com/*", "*://*.tinder.com/*", "https://bumble.com/*", "*://*.bumble.com/*"]
+        }
     ]
 }
