@@ -361,6 +361,75 @@ input[type="range"]::-webkit-slider-thumb:hover {
 }
 
 /* ============================================================
+   Slider rows (number fields shown as sliders)
+   ============================================================ */
+.slider-row {
+  padding: 10px 0;
+  border-bottom: 1px solid var(--hairline);
+}
+
+.slider-row:last-child {
+  border-bottom: none;
+}
+
+.slider-row .range-header span {
+  font-size: 13px;
+  color: var(--text);
+  font-weight: 500;
+}
+
+.slider-row .range-value {
+  font-size: 13px;
+}
+
+/* Dual-handle range (Age, Session Gap): two range inputs over one track */
+.dual-range {
+  position: relative;
+  height: 18px;
+  margin: 4px 0 2px;
+}
+
+.dual-range .dual-track {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  right: 0;
+  height: 6px;
+  transform: translateY(-50%);
+  border-radius: var(--r-pill);
+  background: var(--surface-3);
+}
+
+.dual-range .dual-fill {
+  position: absolute;
+  top: 50%;
+  height: 6px;
+  transform: translateY(-50%);
+  border-radius: var(--r-pill);
+  background: var(--brand);
+}
+
+/* The two range inputs sit on top of the track, transparent, thumbs only */
+.dual-range input[type="range"] {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 18px;
+  margin: 0;
+  background: none;
+  pointer-events: none;
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+.dual-range input[type="range"]::-webkit-slider-thumb {
+  pointer-events: auto;
+  position: relative;
+  z-index: 2;
+}
+
+/* ============================================================
    Number input rows
    ============================================================ */
 .input-row {

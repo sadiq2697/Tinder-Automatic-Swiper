@@ -37,24 +37,33 @@ const elements = {
 
   // Settings - Limits
   swipeLimit: document.getElementById('swipeLimit'),
+  swipeLimitValue: document.getElementById('swipeLimitValue'),
   dailyLimit: document.getElementById('dailyLimit'),
+  dailyLimitValue: document.getElementById('dailyLimitValue'),
   breakInterval: document.getElementById('breakInterval'),
+  breakIntervalValue: document.getElementById('breakIntervalValue'),
   breakDurationRow: document.getElementById('breakDurationRow'),
   breakDuration: document.getElementById('breakDuration'),
+  breakDurationValue: document.getElementById('breakDurationValue'),
   sessionGapInterval: document.getElementById('sessionGapInterval'),
+  sessionGapIntervalValue: document.getElementById('sessionGapIntervalValue'),
   sessionGapRow: document.getElementById('sessionGapRow'),
   sessionGapMin: document.getElementById('sessionGapMin'),
   sessionGapMax: document.getElementById('sessionGapMax'),
+  sessionGapValue: document.getElementById('sessionGapValue'),
 
   // Settings - Filters
   filtersEnabled: document.getElementById('filtersEnabled'),
   filtersContent: document.getElementById('filtersContent'),
   ageMin: document.getElementById('ageMin'),
   ageMax: document.getElementById('ageMax'),
+  ageRangeValue: document.getElementById('ageRangeValue'),
   maxDistance: document.getElementById('maxDistance'),
+  maxDistanceValue: document.getElementById('maxDistanceValue'),
   requireBio: document.getElementById('requireBio'),
   verifiedOnly: document.getElementById('verifiedOnly'),
   minPhotos: document.getElementById('minPhotos'),
+  minPhotosValue: document.getElementById('minPhotosValue'),
   bioKeywords: document.getElementById('bioKeywords'),
   bioBlocklist: document.getElementById('bioBlocklist'),
 
@@ -95,11 +104,74 @@ const elements = {
   siteIndicatorRunning: document.getElementById('siteIndicatorRunning'),
 };
 
+const Logic = AutoSwiperLogic;
+
 function updateSliderBackground(slider) {
-  const min = parseFloat(slider.min) || 0;
-  const max = parseFloat(slider.max) || 100;
-  const value = ((slider.value - min) / (max - min)) * 100;
+  const value = Logic.sliderFillPercent(slider.value, slider.min, slider.max);
   slider.style.setProperty('--value', `${value}%`);
+}
+
+// Single-value slider: refresh its fill and its label together.
+function refreshSingleSlider(slider) {
+  updateSliderBackground(slider);
+  const label = elements[`${slider.id}Value`];
+  if (label) label.textContent = Logic.formatSliderValue(slider.id, slider.value);
+}
+
+// Dual-handle range: clamp the two thumbs so min <= max, paint the middle
+// fill, and update the label. `unit` is appended to the label text.
+function refreshDualRange(container, minEl, maxEl, labelEl, unit) {
+  const active = document.activeElement === minEl ? 'min' : 'max';
+  const { lo, hi } = Logic.clampDualRange(minEl.value, maxEl.value, active);
+  minEl.value = lo;
+  maxEl.value = hi;
+
+  const rangeMin = parseFloat(minEl.min) || 0;
+  const rangeMax = parseFloat(maxEl.max) || 100;
+  const fill = container.querySelector('.dual-fill');
+  if (fill) {
+    const p = Logic.dualFillPercents(lo, hi, rangeMin, rangeMax);
+    fill.style.left = `${p.left}%`;
+    fill.style.right = `${p.right}%`;
+  }
+  if (labelEl) labelEl.textContent = `${lo} - ${hi}${unit ? ' ' + unit : ''}`;
+}
+
+function refreshAgeRange() {
+  refreshDualRange(
+    document.querySelector('.dual-range[data-dual="age"]'),
+    elements.ageMin, elements.ageMax, elements.ageRangeValue, ''
+  );
+}
+
+function refreshSessionGapRange() {
+  refreshDualRange(
+    document.querySelector('.dual-range[data-dual="sessionGap"]'),
+    elements.sessionGapMin, elements.sessionGapMax, elements.sessionGapValue, 'min'
+  );
+}
+
+// Wire all the limit/filter sliders: fill + label on input, and the dual
+// ranges' clamp/fill. Conditional-row visibility stays handled by the
+// existing change listeners further down.
+function initSliders() {
+  const singles = ['swipeLimit', 'dailyLimit', 'breakInterval', 'breakDuration',
+    'sessionGapInterval', 'maxDistance', 'minPhotos'];
+  singles.forEach(id => {
+    const el = elements[id];
+    if (!el) return;
+    refreshSingleSlider(el);
+    el.addEventListener('input', () => refreshSingleSlider(el));
+  });
+
+  [elements.ageMin, elements.ageMax].forEach(el => {
+    if (el) el.addEventListener('input', refreshAgeRange);
+  });
+  [elements.sessionGapMin, elements.sessionGapMax].forEach(el => {
+    if (el) el.addEventListener('input', refreshSessionGapRange);
+  });
+  refreshAgeRange();
+  refreshSessionGapRange();
 }
 
 function showView(hasActiveSessions) {
@@ -119,13 +191,11 @@ function showToast(message) {
 }
 
 function parseKeywords(str) {
-  if (!str) return [];
-  return str.split(',').map(s => s.trim()).filter(s => s.length > 0);
+  return Logic.parseKeywords(str);
 }
 
 function formatKeywords(arr) {
-  if (!arr || !Array.isArray(arr)) return '';
-  return arr.join(', ');
+  return Logic.formatKeywords(arr);
 }
 
 // Load all settings from new storage structure
@@ -172,12 +242,12 @@ function loadSettings() {
     if (settings.dailyLimit !== undefined) elements.dailyLimit.value = settings.dailyLimit;
     if (settings.breakInterval !== undefined) {
       elements.breakInterval.value = settings.breakInterval;
-      elements.breakDurationRow.style.display = settings.breakInterval > 0 ? 'flex' : 'none';
+      elements.breakDurationRow.style.display = settings.breakInterval > 0 ? 'block' : 'none';
     }
     if (settings.breakDuration !== undefined) elements.breakDuration.value = settings.breakDuration;
     if (settings.sessionGapInterval !== undefined) {
       elements.sessionGapInterval.value = settings.sessionGapInterval;
-      elements.sessionGapRow.style.display = settings.sessionGapInterval > 0 ? 'flex' : 'none';
+      elements.sessionGapRow.style.display = settings.sessionGapInterval > 0 ? 'block' : 'none';
     }
     if (settings.sessionGapMin !== undefined) elements.sessionGapMin.value = settings.sessionGapMin;
     if (settings.sessionGapMax !== undefined) elements.sessionGapMax.value = settings.sessionGapMax;
@@ -195,6 +265,14 @@ function loadSettings() {
     if (filters.minPhotos !== undefined) elements.minPhotos.value = filters.minPhotos;
     if (filters.bioKeywords) elements.bioKeywords.value = formatKeywords(filters.bioKeywords);
     if (filters.bioBlocklist) elements.bioBlocklist.value = formatKeywords(filters.bioBlocklist);
+
+    // Sync slider fills + value labels with the loaded values
+    ['swipeLimit', 'dailyLimit', 'breakInterval', 'breakDuration',
+      'sessionGapInterval', 'maxDistance', 'minPhotos'].forEach(id => {
+      if (elements[id]) refreshSingleSlider(elements[id]);
+    });
+    refreshAgeRange();
+    refreshSessionGapRange();
 
     // Quick stats
     elements.todayLikes.textContent = stats.todayLikes || 0;
@@ -385,15 +463,23 @@ elements.filtersEnabled.addEventListener('change', () => {
   autoSaveSettings();
 });
 
-elements.breakInterval.addEventListener('change', () => {
+function toggleBreakDurationRow() {
   const val = parseInt(elements.breakInterval.value, 10) || 0;
-  elements.breakDurationRow.style.display = val > 0 ? 'flex' : 'none';
+  elements.breakDurationRow.style.display = val > 0 ? 'block' : 'none';
+}
+elements.breakInterval.addEventListener('input', toggleBreakDurationRow);
+elements.breakInterval.addEventListener('change', () => {
+  toggleBreakDurationRow();
   autoSaveSettings();
 });
 
-elements.sessionGapInterval.addEventListener('change', () => {
+function toggleSessionGapRow() {
   const val = parseInt(elements.sessionGapInterval.value, 10) || 0;
-  elements.sessionGapRow.style.display = val > 0 ? 'flex' : 'none';
+  elements.sessionGapRow.style.display = val > 0 ? 'block' : 'none';
+}
+elements.sessionGapInterval.addEventListener('input', toggleSessionGapRow);
+elements.sessionGapInterval.addEventListener('change', () => {
+  toggleSessionGapRow();
   autoSaveSettings();
 });
 
@@ -411,7 +497,8 @@ function autoSaveSettings() {
  elements.delayMin, elements.delayMax, elements.bioKeywords, elements.bioBlocklist,
  elements.requireBio, elements.verifiedOnly].forEach(el => {
   if (el) el.addEventListener('change', autoSaveSettings);
-  if (el && (el.type === 'text' || el.type === 'number')) {
+  // Persist live while dragging sliders / typing in text+number fields.
+  if (el && (el.type === 'text' || el.type === 'number' || el.type === 'range')) {
     el.addEventListener('input', autoSaveSettings);
   }
 });
@@ -579,30 +666,46 @@ function initTabs() {
         }
       });
 
-      // Save active tab preference
-      chrome.storage.local.get(['ui'], (data) => {
-        const ui = data.ui || {};
-        ui.activeTab = targetTab;
-        chrome.storage.local.set({ ui });
-      });
+      // Save active tab preference (storage is unavailable outside the
+      // extension context, so guard it and keep tab switching working).
+      if (chrome?.storage?.local) {
+        chrome.storage.local.get(['ui'], (data) => {
+          const ui = data.ui || {};
+          ui.activeTab = targetTab;
+          chrome.storage.local.set({ ui });
+        });
+      }
     });
   });
 
   // Restore last active tab
-  chrome.storage.local.get(['ui'], (data) => {
-    const activeTab = data.ui?.activeTab || 'swipe';
-    const targetBtn = document.querySelector(`.tab-btn[data-tab="${activeTab}"]`);
-    if (targetBtn) {
-      targetBtn.click();
-    }
-  });
+  if (chrome?.storage?.local) {
+    chrome.storage.local.get(['ui'], (data) => {
+      const activeTab = data.ui?.activeTab || 'swipe';
+      const targetBtn = document.querySelector(`.tab-btn[data-tab="${activeTab}"]`);
+      if (targetBtn) {
+        targetBtn.click();
+      }
+    });
+  }
 }
 
-// Initialize
+// Initialize. Each step is isolated so a failure in one (for example a
+// chrome.* API being unavailable) cannot prevent the rest, notably the tab
+// navigation, from initializing.
 document.addEventListener('DOMContentLoaded', () => {
-  loadSettings();
-  updateSliderBackground(elements.delayTime);
-  updateSliderBackground(elements.swipeRatio);
-  detectSite();
-  initTabs();
+  const step = (label, fn) => {
+    try {
+      fn();
+    } catch (err) {
+      console.error(`Auto Swiper init step "${label}" failed:`, err);
+    }
+  };
+
+  step('loadSettings', loadSettings);
+  step('sliderDelay', () => updateSliderBackground(elements.delayTime));
+  step('sliderRatio', () => updateSliderBackground(elements.swipeRatio));
+  step('initSliders', initSliders);
+  step('detectSite', detectSite);
+  step('initTabs', initTabs);
 });
