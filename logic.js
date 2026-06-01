@@ -74,6 +74,18 @@
     return arr.join(', ');
   }
 
+  // Parse a Tinder profile heading like "Meera 23" into { name, age }.
+  // The age is the trailing number; the name is everything before it. Handles
+  // multi-word names, accents, extra whitespace, name-only, and badge noise.
+  // Returns age as a string, or '?' when no plausible age is present.
+  function parseTinderHeading(raw) {
+    const text = String(raw || '').replace(/\s+/g, ' ').trim();
+    if (!text) return { name: '', age: '?' };
+    const ageMatch = text.match(/\b(\d{1,3})\b/);
+    const name = text.replace(/\s*\b\d{1,3}\b\s*$/, '').trim();
+    return { name, age: ageMatch ? ageMatch[1] : '?' };
+  }
+
   const api = {
     formatSliderValue,
     clampDualRange,
@@ -81,6 +93,7 @@
     sliderFillPercent,
     parseKeywords,
     formatKeywords,
+    parseTinderHeading,
   };
 
   // Browser: expose as a global. Node/Vitest: export via module.exports.

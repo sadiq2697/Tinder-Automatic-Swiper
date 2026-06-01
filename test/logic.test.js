@@ -6,6 +6,7 @@ const {
   sliderFillPercent,
   parseKeywords,
   formatKeywords,
+  parseTinderHeading,
 } = require('../logic.js');
 
 describe('formatSliderValue', () => {
@@ -133,5 +134,33 @@ describe('parseKeywords / formatKeywords', () => {
   it('round-trips a keyword string', () => {
     const s = 'a, b, c';
     expect(formatKeywords(parseKeywords(s))).toBe(s);
+  });
+});
+
+describe('parseTinderHeading (fixes "Unknown / ?" scraping)', () => {
+  it('splits "Meera 23" into name and age', () => {
+    expect(parseTinderHeading('Meera 23')).toEqual({ name: 'Meera', age: '23' });
+  });
+
+  it('handles trailing whitespace and collapsed spaces', () => {
+    expect(parseTinderHeading('  Meera   23  ')).toEqual({ name: 'Meera', age: '23' });
+  });
+
+  it('keeps multi-word names intact', () => {
+    expect(parseTinderHeading('Mary Jane 27')).toEqual({ name: 'Mary Jane', age: '27' });
+  });
+
+  it('handles accented names', () => {
+    expect(parseTinderHeading('Zoë 21')).toEqual({ name: 'Zoë', age: '21' });
+  });
+
+  it('returns "?" age when no number is present', () => {
+    expect(parseTinderHeading('Meera')).toEqual({ name: 'Meera', age: '?' });
+  });
+
+  it('returns empty name + "?" for empty input', () => {
+    expect(parseTinderHeading('')).toEqual({ name: '', age: '?' });
+    expect(parseTinderHeading(null)).toEqual({ name: '', age: '?' });
+    expect(parseTinderHeading(undefined)).toEqual({ name: '', age: '?' });
   });
 });
